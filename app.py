@@ -646,7 +646,7 @@ if do_action:
     if not _token:
         st.error("请在 Streamlit Cloud 的 Settings -> Secrets 中配置 REPLICATE_API_TOKEN")
         st.stop()
-    _replicate_client = replicate.Client(auth=_token)
+    _replicate_client = replicate.Client(api_token=_token)
 
     temp_path = None
     try:
