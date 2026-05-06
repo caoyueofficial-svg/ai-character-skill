@@ -86,8 +86,21 @@ def _round_down_to_multiple(x: int, m: int) -> int:
     return max(m, (x // m) * m)
 
 
-# Load REPLICATE_API_TOKEN from .env (if present)
+# Local dev: load .env into os.environ (Streamlit Cloud uses st.secrets instead)
 load_dotenv()
+
+
+def get_replicate_api_token() -> Optional[str]:
+    """Streamlit Cloud: Secrets first; else environment (e.g. .env / shell)."""
+    try:
+        if "REPLICATE_API_TOKEN" in st.secrets:
+            v = st.secrets["REPLICATE_API_TOKEN"]
+            if v and str(v).strip():
+                return str(v).strip()
+    except Exception:
+        pass
+    t = os.environ.get("REPLICATE_API_TOKEN")
+    return t.strip() if t and str(t).strip() else None
 
 
 def save_upload_to_temp_file(uploaded_file, max_side: int = 768) -> str:
@@ -169,6 +182,7 @@ def _save_url_as_temp_png(url: str) -> str:
 
 
 def _replicate_run_with_backoff(
+    client: Any,
     model_input: Dict[str, Any],
     image_paths: Optional[List[str]] = None,
 ):
@@ -181,8 +195,8 @@ def _replicate_run_with_backoff(
                     files = [stack.enter_context(open(p, "rb")) for p in image_paths]
                     inp = dict(model_input)
                     inp["image_input"] = files
-                    return replicate.run(MODEL_VERSION, input=inp)
-            return replicate.run(MODEL_VERSION, input=model_input)
+                    return client.run(MODEL_VERSION, input=inp)
+            return client.run(MODEL_VERSION, input=model_input)
         except Exception as e:
             last_err = e
             err_text = str(e).lower()
@@ -202,7 +216,7 @@ def _replicate_run_with_backoff(
     raise RuntimeError("Replicate call failed with no exception recorded")
 
 
-def run_three_views(base_prompt: str, temp_path: Optional[str]) -> List[str]:
+def run_three_views(base_prompt: str, temp_path: Optional[str], client: Any) -> List[str]:
     """
     Always return 3 images: front / left / back.
     Front is generated first; side/back use [upload + front PNG] to lock shoes and hem (text-only: [front] only).
@@ -278,7 +292,7 @@ def run_three_views(base_prompt: str, temp_path: Optional[str]) -> List[str]:
             else:
                 image_paths = None if idx == 0 else [front_lock_path]
 
-            out = _replicate_run_with_backoff(model_input, image_paths)
+            out = _replicate_run_with_backoff(client, model_input, image_paths)
 
             if isinstance(out, (list, tuple)):
                 u = to_image_url(out[0]) if out else ""
@@ -628,9 +642,11 @@ st.divider()
 st.subheader("输出区 · 三视图结果")
 
 if do_action:
-    if not os.getenv("REPLICATE_API_TOKEN"):
-        st.error("未检测到环境变量 `REPLICATE_API_TOKEN`，请在 `.env` 中配置或设置环境变量。")
+    _token = get_replicate_api_token()
+    if not _token:
+        st.error("请在 Streamlit Cloud 的 Settings -> Secrets 中配置 REPLICATE_API_TOKEN")
         st.stop()
+    _replicate_client = replicate.Client(auth=_token)
 
     temp_path = None
     try:
@@ -644,7 +660,7 @@ if do_action:
             temp_path = save_upload_to_temp_file(uploaded)
 
             with st.spinner("生成中，请稍候（图生图：约 3 次模型请求）…"):
-                output_urls = run_three_views(prompt, temp_path)
+                output_urls = run_three_views(prompt, temp_path, _replicate_client)
 
             if not output_urls:
                 st.warning("没有拿到模型输出，请稍后重试。")
@@ -688,7 +704,7 @@ if do_action:
                 prompt = build_prompt(traits_final)
 
                 with st.spinner("生成中，请稍候（文生图：约 3 次模型请求）…"):
-                    output_urls = run_three_views(prompt, None)
+                    output_urls = run_three_views(prompt, None, _replicate_client)
 
                 if not output_urls:
                     st.warning("没有拿到模型输出，请稍后重试（已保留确认描述，可直接再次点击生成）。")
